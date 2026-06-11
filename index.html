@@ -347,11 +347,15 @@ async function initKickRumble() {
 
   // create 8-beat kick+rumble loop (global)
   kickLoop = new Tone.Loop(time => {
-    beatIndexKick = (beatIndexKick % 8) + 1;
 
-    kickPlayerClean.start(time);
-    kickPlayerRumble.start(time);
-  }, "4n");
+  log("KICK", "tick " + beatIndexKick);
+
+  beatIndexKick = (beatIndexKick % 8) + 1;
+
+  kickPlayerClean.start(time);
+  kickPlayerRumble.start(time);
+
+}, "4n");
 }
 
 // Create melody loop
