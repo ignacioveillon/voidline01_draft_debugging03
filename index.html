@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voidline_01 Draft 03 Debugging 03</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+body { font-family: Arial; background:#111; color:#fff; text-align:center; padding:20px;}
+button,input[type=range]{margin:8px;padding:12px;border-radius:8px;font-size:16px;cursor:pointer;}
+button{border:none;background:#4cafef;color:#000;}
+button:hover{background:#3a9dd9;}
+input[type=range]{width:300px;}
+.slider-container{margin:4px; display:flex; align-items:center; justify-content:center;}
+.slider-container span{width:60px;margin-left:10px;text-align:left;}
+</style>
+</head>
+<body>
+<h1>Voidline_01 Draft 03 Debugging 03</h1>
+
+<button id="initAudioBtn">Init Audio</button>
+<button id="startBtn" disabled>Start</button>
+<button id="stopBtn">Stop</button>
+
+<div class="slider-container">
+  <label>Kick Volume:</label>
+  <input type="range" id="kickVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="kickVolValue">0.50</span>
+</div>
+
+<div class="slider-container">
+  <label>Rumble Volume:</label>
+  <input type="range" id="rumbleVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="rumbleVolValue">0.50</span>
+</div>
+
+<div class="slider-container">
+  <label>Melody Volume:</label>
+  <input type="range" id="melodyVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="melodyVolValue">0.50</span>
+</div>
+
+<div class="slider-container">
+  <label>FM Volume:</label>
+  <input type="range" id="fmVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="fmVolValue">0.50</span>
+</div>
+
+<div class="slider-container">
+  <label>Clap Volume:</label>
+  <input type="range" id="clapVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="clapVolValue">0.50</span>
+</div>
+
+<div class="slider-container">
+  <label>Hi-Hat Volume:</label>
+  <input type="range" id="hiHatVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="hiHatVolValue">0.50</span>
+</div>
+
+<!-- 🆕 Sweep Synth Volume Slider -->
+<div class="slider-container">
+  <label>Sweep Volume:</label>
+  <input type="range" id="sweepVolume" min="0" max="1" step="0.01" value="0.5">
+  <span id="sweepVolValue">0.50</span>
+</div>
+
+<script>
+function log(tag, msg) {
+  const t = (Tone.now ? Tone.now() : performance.now() / 1000).toFixed(3);
+  const div = document.createElement("div");
+  div.style.color = "#0f0";
+  div.style.fontSize = "12px";
+  div.style.textAlign = "left";
+  div.textContent = `[${tag} @ ${t}] ${msg}`;
+  document.body.appendChild(div);
+}
+
+const bpm = 140;
+Tone.Transport.bpm.value = bpm;
+
+let kickPlayerClean, kickPlayerRumble, cleanGain, rumbleGain;
+let loopMelody, synth, masterMelody;
+let beatIndexKick = 0;
+let kickLoop;
+
+// Melody data
+const quarter = 60 / bpm;
+const eighth = quarter / 2;
+const sixteenth = eighth / 2;
+const melody = [
+  { note: "Ab4", duration: eighth },
+  { note: "G4", duration: eighth },
+  { note: null, duration: eighth },
+  { note: "Ab4", duration: eighth },
+  { note: "G4", duration: eighth },
+  { note: "G3", duration: eighth },
+  { note: "G3", duration: sixteenth },
+  { note: "G3", duration: sixteenth },
+  { note: "G3", duration: eighth },
+  { note: "Ab3", duration: eighth },
+  { note: "G3", duration: eighth },
+  { note: null, duration: quarter * 3 }
+];
+const totalDuration = melody.reduce((sum, i) => sum + i.duration, 0);
+
+// --- 8-beat metronome loop ---
+Tone.Transport.seconds = 0; // reset clock
+let beatIndex = 0;
+
+const metroLoop = new Tone.Loop(time => {
+  beatIndex = (beatIndex % 8) + 1;
+
+  log("METRO", `beat ${beatIndex}`);
+
+  if (beatIndex === 1) {
+    log("METRO", "trigger beat 1");
+    const quarter = 60 / bpm;
+    const now = time;
+
+    fmGain.gain.setValueAtTime(1, now);
+    fmGain.gain.linearRampToValueAtTime(0, now + 2 * quarter);
+
+    fmFilter.frequency.setValueAtTime(Tone.Frequency("C5").toFrequency(), now);
+    fmFilter.frequency.linearRampToValueAtTime(
+      Tone.Frequency("C5").toFrequency(),
+      now + 2 * quarter
+    );
+
+    fmPoly.forEach((s, i) => {
+      s.triggerAttack(fmChordNotes[i], now);
+      s.triggerRelease(now + 5);
+    });
+
+    triggerSweep(now);
+  }
+
+  if (beatIndex === 2 || beatIndex === 4 || beatIndex === 6 || beatIndex === 8) {
+    log("METRO", "clap trigger");
+    triggerClap(time);
+  }
+
+  const upbeatTime = time + Tone.Time("8n").toSeconds();
+  triggerHiHat(upbeatTime);
+
+}, "4n");
+
+
+
+// Create melody synth and effects
+const reverb = new Tone.Reverb({ decay: 4, preDelay: 0.0, wet: 0.5 }).toDestination();
+masterMelody = new Tone.Gain(0.5).connect(reverb);
+synth = new Tone.Synth({
+  oscillator: { type: "sawtooth" },
+  envelope: { attack: 0.01, decay: 0.1, sustain: 0.5, release: 0.1 }
+}).connect(masterMelody);
+
+// --- FM synth + FX chain (insert here, after the melody synth) ---
+const fmChordNotes = ["C1", "C2", "G2", "C3"];
+
+// FX for FM chain (use distinct variable names)
+const fmDistortion = new Tone.Distortion(0.5);
+const fmFilter     = new Tone.Filter(4186.01, "lowpass");
+const fmEq         = new Tone.EQ3({ low: -6, mid: 0, high: -24 });
+const fmComp       = new Tone.Compressor({ threshold: -24, ratio: 4, attack: 0.005, release: 0.005, knee: 25 });
+const fmReverb     = new Tone.Reverb({ decay: 8, preDelay: 0, wet: 0.5 });
+
+// Gain and routing
+const fmGain = new Tone.Gain(0.5);           // for envelope ramp on beat 1
+const fmSliderGain = new Tone.Gain(0.5);     // slider-controlled volume
+
+fmGain.connect(fmDistortion);
+fmDistortion.connect(fmFilter);
+fmFilter.connect(fmEq);
+fmEq.connect(fmComp);
+fmComp.connect(fmSliderGain);                // slider gain after compressor
+fmSliderGain.connect(fmReverb);
+fmReverb.toDestination();                   // final output
+
+// Polyphonic FM voices (one per chord note) and connect to the chain
+const fmPoly = fmChordNotes.map(() => new Tone.FMSynth({
+  oscillator: { type: "sine" },
+  modulation: { type: "sine" },
+  harmonicity: 2,
+  modulationIndex: 32,
+  envelope: { attack: 0.0, decay: 0.0, sustain: 1.0, release: 0.0 },
+  modulationEnvelope: { attack: 0.0, decay: 0.0, sustain: 1.0, release: 0.0 }
+}).connect(fmGain));
+
+// --- Sweep Synth (new) ---
+let sweepOsc, sweepEnv, sweepGain, sweepFilter, sweepReverb, sweepComp, sweepEq, sweepSliderGain;
+
+function createSweepNodes() {
+  sweepOsc = new Tone.Oscillator({ type:"sawtooth", frequency:"C1" });
+  sweepEnv = new Tone.AmplitudeEnvelope({ attack:0.1, decay:0, sustain:1, release:0.1 });
+  sweepGain = new Tone.Gain(0.5);
+  const distortion = new Tone.Distortion(0.5);
+  sweepFilter = new Tone.Filter({ type:"lowpass", frequency:130.81, rolloff:-24, Q:2 });
+  sweepComp = new Tone.MultibandCompressor({
+    lowFrequency:400, highFrequency:2500,
+    low:{threshold:-24,ratio:3}, mid:{threshold:-18,ratio:2}, high:{threshold:-12,ratio:2}
+  });
+  sweepEq = new Tone.EQ3({ low:-24, mid:6, high:12, lowFrequency:130.81, highFrequency:523.25 });
+  sweepReverb = new Tone.Reverb({ decay:4, preDelay:0, wet:0.5 });
+
+  // 🆕 Add the final volume control
+  sweepSliderGain = new Tone.Gain(0.5);
+
+  // 🧩 Full chain with the slider gain added
+  sweepOsc.chain(
+    sweepEnv,
+    sweepGain,
+    distortion,
+    sweepFilter,
+    sweepComp,
+    sweepEq,
+    sweepReverb,
+    sweepSliderGain,
+    Tone.Destination
+  );
+}
+
+function triggerSweep(time) {
+  const dur = 2;
+  sweepOsc.start(time);
+  sweepEnv.triggerAttackRelease(dur, time);
+
+  sweepGain.gain.cancelScheduledValues(time);
+  sweepGain.gain.setValueAtTime(0.5, time);
+  sweepGain.gain.exponentialRampToValueAtTime(1, time + 1);
+  sweepGain.gain.exponentialRampToValueAtTime(0.5, time + dur);
+
+  sweepFilter.frequency.cancelScheduledValues(time);
+  sweepFilter.frequency.setValueAtTime(130.81, time);
+  sweepFilter.frequency.exponentialRampToValueAtTime(523.25, time + 1);
+  sweepFilter.frequency.exponentialRampToValueAtTime(130.81, time + dur);
+
+  sweepOsc.stop(time + dur);
+}
+
+// --- Clap nodes (add here) ---
+let clapNoise, clapBand, clapHigh, clapEnv1, clapEnv2, clapEnv3, clapEnv4, clapReverb, clapGain;
+
+function createClapNodes() {
+  clapNoise = new Tone.Noise("white");
+  clapBand = new Tone.Filter({ type: "bandpass", frequency: 1800, Q: 1 });
+  clapHigh = new Tone.Filter({ type: "highpass", frequency: 400 });
+  clapEnv1 = new Tone.AmplitudeEnvelope({ attack:0.001, decay:0.08, sustain:0, release:0.02 });
+  clapEnv2 = new Tone.AmplitudeEnvelope({ attack:0.001, decay:0.10, sustain:0, release:0.03 });
+  clapEnv3 = new Tone.AmplitudeEnvelope({ attack:0.001, decay:0.12, sustain:0, release:0.04 });
+  clapEnv4 = new Tone.AmplitudeEnvelope({ attack:0.001, decay:0.14, sustain:0, release:0.05 });
+  clapGain = new Tone.Gain(0.5).toDestination();
+  clapReverb = new Tone.Reverb({ decay:1.5, wet:0.3 }).connect(clapGain);
+
+  // --- Routing ---
+  clapNoise.connect(clapBand);
+  clapBand.connect(clapHigh);
+  clapHigh.fan(clapEnv1, clapEnv2, clapEnv3, clapEnv4);
+  clapEnv1.connect(clapReverb);
+  clapEnv2.connect(clapReverb);
+  clapEnv3.connect(clapReverb);
+  clapEnv4.connect(clapReverb);
+}
+
+function triggerClap(time) {
+  clapEnv1.triggerAttackRelease(0.08, time);
+  clapEnv2.triggerAttackRelease(0.10, time + 0.015);
+  clapEnv3.triggerAttackRelease(0.12, time + 0.03);
+  clapEnv4.triggerAttackRelease(0.14, time + 0.045);
+}
+
+// --- Open Hi-Hat nodes ---
+let metallicFM, noise, noiseEnv, hiHatBus, hiHatGain;
+
+function createHiHatNodes() {
+  // FM metallic layer
+  metallicFM = new Tone.FMSynth({
+    harmonicity: 8,
+    modulationIndex: 32,
+    oscillator: { type: "square" },
+    envelope: { attack: 0.001, decay: 0.214, sustain: 0, release: 0 },
+    modulation: { type: "square" },
+    modulationEnvelope: { attack: 0.001, decay: 0.214, sustain: 0, release: 0 }
+  });
+
+  const fmHP = new Tone.Filter(6000, "highpass");
+
+  // Noise layer
+  noise = new Tone.Noise("white");
+  noiseEnv = new Tone.AmplitudeEnvelope({ attack: 0.001, decay: 0.43, sustain: 0, release: 0 });
+  const noiseGain = new Tone.Gain(0.25);
+  const noiseHP = new Tone.Filter(6000, "highpass");
+
+  // Hi-hat bus
+  hiHatGain = new Tone.Gain(0.5);
+  hiHatBus = new Tone.Gain(1);
+
+  // FX chain
+  const comp = new Tone.Compressor({ threshold: -20, ratio: 4, attack: 0.002, release: 0.05 });
+  const dist = new Tone.Distortion(0.3);
+  const eq = new Tone.EQ3(-12, 0, 2);
+  const reverb = new Tone.Reverb({ decay: 0.5, preDelay: 0.01, wet: 0.2 });
+
+  metallicFM.connect(fmHP);
+  fmHP.connect(hiHatBus);
+
+  noise.connect(noiseEnv);
+  noiseEnv.connect(noiseGain);
+  noiseGain.connect(noiseHP);
+  noiseHP.connect(hiHatBus);
+
+  hiHatBus.chain(comp, dist, eq, reverb, hiHatGain, Tone.Destination);
+}
+
+function triggerHiHat(time) {
+  metallicFM.triggerAttackRelease("C7", "16n", time);
+  noiseEnv.triggerAttackRelease(noiseEnv.decay, time);
+}
+
+// Prepare Kick & Rumble
+async function initKickRumble() {
+  const buffer = await Tone.Offline(async () => {
+    const kickSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.08,
+      octaves: 6,
+      oscillator: { type: "sine" },
+      envelope: { attack: 0.001, decay: 0.8, sustain: 0.1, release: 0.5 }
+    }).toDestination();
+    kickSynth.triggerAttackRelease("C1", "1n", 0);
+  }, 1.0);
+
+  kickPlayerClean = new Tone.Player(buffer);
+  kickPlayerRumble = new Tone.Player(buffer);
+
+  cleanGain = new Tone.Gain(0.5).toDestination();
+  rumbleGain = new Tone.Gain(0.5);
+
+  const distortion = new Tone.Distortion(0.4);
+  const filter = new Tone.Filter(60, "lowpass");
+  const eq = new Tone.EQ3({ low: +6, mid: 0, high: -6 });
+  const comp = new Tone.Compressor({ threshold: -24, ratio: 6 });
+  const reverbKick = new Tone.Reverb({ decay: 2, wet: 0.3 });
+
+  rumbleGain.chain(distortion, filter, eq, comp, reverbKick, Tone.Destination);
+
+  kickPlayerClean.connect(cleanGain);
+  kickPlayerRumble.connect(rumbleGain);
+
+  // create 8-beat kick+rumble loop (global)
+  kickLoop = new Tone.Loop(time => {
+    beatIndexKick = (beatIndexKick % 8) + 1;
+
+    kickPlayerClean.start(time);
+    kickPlayerRumble.start(time);
+  }, "4n");
+}
+
+// Create melody loop
+function createMelodyLoop() {
+  if (loopMelody) loopMelody.dispose();
+  loopMelody = new Tone.Loop(time => {
+    let noteTime = time;
+    melody.forEach(item => {
+      if (item.note) synth.triggerAttackRelease(item.note, item.duration, noteTime);
+      noteTime += item.duration;
+    });
+  }, totalDuration);
+  loopMelody.start(0);
+}
+
+// Button handlers
+// Init audio context + create all players/nodes
+document.getElementById("initAudioBtn").addEventListener("click", async () => {
+  log("INIT", "click");
+
+  await Tone.start();
+  log("INIT", "Tone started");
+
+  if (!kickPlayerClean) {
+    await initKickRumble();
+    log("INIT", "kick ready");
+  }
+
+  if (!clapNoise) {
+    createClapNodes();
+    clapNoise.start();
+    log("INIT", "clap ready");
+  }
+
+  if (!metallicFM) {
+    createHiHatNodes();
+    noise.start();
+    log("INIT", "hihat ready");
+  }
+
+  if (!sweepOsc) {
+    createSweepNodes();
+    log("INIT", "sweep ready");
+  }
+
+  document.getElementById("initAudioBtn").disabled = true;
+  document.getElementById("startBtn").disabled = false;
+
+  log("INIT", "system ready");
+});
+
+
+// Start playback
+document.getElementById("startBtn").addEventListener("click", () => {
+
+  log("START", "click");
+
+  // --- Reset transport and beat counters ---
+  Tone.Transport.stop();
+  Tone.Transport.position = 0;
+  beatIndex = 0;
+  beatIndexKick = 0;
+
+  log("START", "transport reset");
+
+  // --- Stop any old loops before restarting ---
+  if (loopMelody) loopMelody.stop();
+  if (kickLoop) kickLoop.stop();
+  if (metroLoop) metroLoop.stop();
+
+  log("START", "old loops stopped");
+
+  // --- Recreate and start loops ---
+  createMelodyLoop();
+  log("START", "melody loop created");
+
+  kickLoop.start(0);
+  log("START", "kick loop started");
+
+  metroLoop.start(0);
+  log("START", "metro loop started");
+
+  Tone.Transport.start();
+  log("START", "transport started");
+});
+
+// Stop playback
+document.getElementById("stopBtn").addEventListener("click", () => {
+  Tone.Transport.stop();
+  if (loopMelody) loopMelody.stop();
+  if (kickLoop) kickLoop.stop();
+  // clap nodes can remain; nothing extra required
+});
+
+// Volume sliders
+document.getElementById("kickVolume").addEventListener("input", e=>{
+  const v=parseFloat(e.target.value); cleanGain.gain.value=v;
+  document.getElementById("kickVolValue").textContent=v.toFixed(2);
+});
+
+document.getElementById("rumbleVolume").addEventListener("input", e=>{
+  const v=parseFloat(e.target.value); rumbleGain.gain.value=v;
+  document.getElementById("rumbleVolValue").textContent=v.toFixed(2);
+});
+
+document.getElementById("melodyVolume").addEventListener("input", e=>{
+  const v=parseFloat(e.target.value); masterMelody.gain.value=v;
+  document.getElementById("melodyVolValue").textContent=v.toFixed(2);
+});
+
+document.getElementById("fmVolume").addEventListener("input", e=>{
+  const v = parseFloat(e.target.value);
+  fmSliderGain.gain.value = v;                        // ← now controls FM volume independently
+  document.getElementById("fmVolValue").textContent = v.toFixed(2);
+});
+
+document.getElementById("clapVolume").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  clapGain.gain.value = v;                            // ← controls Clap volume
+  document.getElementById("clapVolValue").textContent = v.toFixed(2);
+});
+
+document.getElementById("hiHatVolume").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  hiHatGain.gain.value = v;
+  document.getElementById("hiHatVolValue").textContent = v.toFixed(2);
+});
+
+// 🆕 Sweep Volume Slider
+document.getElementById("sweepVolume").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  sweepSliderGain.gain.value = v;
+  document.getElementById("sweepVolValue").textContent = v.toFixed(2);
+});
+
+</script>
+</body>
+</html>
